@@ -2,9 +2,12 @@ require "http/client"
 require "json"
 require "kemal"
 
+require "./nilable_hash"
 require "./concourse-summary/*"
 
+alias GroupHash = NilableHash(String, NilableHash(String, Array(String)?)?)
 REFRESH_INTERVAL = (ENV["REFRESH_INTERVAL"]? || 30).to_i
+GROUPS = Hash(String, GroupHash).from_json(ENV["CS_GROUPS"]? || "{}")
 
 def setup(env)
   refresh_interval = REFRESH_INTERVAL
@@ -25,7 +28,7 @@ get "/host/:host" do |env|
   refresh_interval,username,password,ignore_groups = setup(env)
   host = env.params.url["host"]
 
-  data = MyData.get_data(host, username, password)
+  data = MyData.get_data(host, username, password, nil)
 
   statuses = process(data, ignore_groups)
   render "views/host.ecr", "views/layout.ecr"
@@ -34,17 +37,21 @@ end
 get "/group/:key" do |env|
   refresh_interval,username,password,ignore_groups = setup(env)
 
-  host = "example.com"
-  group_key = env.params.url["key"]
-  group_hash = Group.parse(ENV["CS_GROUPS"]? || "{}", group_key)
-  data = Group.all(group_hash)
+  hosts = GROUPS[env.params.url["key"]]
+  hosts = hosts.map do |host, pipelines|
+    data = MyData.get_data(host, username, password, pipelines)
+    data = MyData.filter_groups(data, pipelines)
+    statuses = process(data, ignore_groups)
+    { host, statuses }
+  end
 
-  statuses = process(data, ignore_groups)
-  render "views/host.ecr", "views/layout.ecr"
+  hosts
+  render "views/group.ecr", "views/layout.ecr"
 end
 
 get "/" do |env|
   hosts = (ENV["HOSTS"]? || "").split(/\s+/)
+  groups = GROUPS.keys
   render "views/index.ecr", "views/layout.ecr"
 end
 
